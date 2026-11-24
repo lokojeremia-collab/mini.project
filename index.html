@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="id"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>KopiXR – Teknologi Produksi Tanaman Kopi</title>
+<style>
+:root{--bg1:#cfe6f5;--bg2:#e9f3dd;--fg:#2b2118;--card:#fffaf0;--ac:#7a4a21;--ok:#2e7d32;--bad:#b3261e;--line:#e0d4bf;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg1:#1c2b38;--bg2:#1f2a1c;--fg:#f1e8da;--card:#2a2018;--ac:#e0a468;--ok:#7bd37f;--bad:#ff8a80;--line:#4a3b2c}}
+:root[data-theme="dark"]{--bg1:#1c2b38;--bg2:#1f2a1c;--fg:#f1e8da;--card:#2a2018;--ac:#e0a468;--ok:#7bd37f;--bad:#ff8a80;--line:#4a3b2c}
+html,body{height:100%;margin:0;overflow:hidden;color:var(--fg);font:15px/1.45 system-ui,sans-serif;background:linear-gradient(var(--bg1),var(--bg2))}
+#v{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;display:none}
+canvas{position:fixed;inset:0;width:100%;height:100%;touch-action:none}
+#top{position:fixed;left:8px;right:8px;top:calc(env(safe-area-inset-top,0px) + 8px);display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.chip,button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:999px;padding:6px 12px}
+button{cursor:pointer}button.p{background:var(--ac);color:var(--card);border-color:var(--ac);font-weight:600}
+button.on{outline:2px solid var(--ac)}
+#panel{position:fixed;left:0;right:0;bottom:0;max-height:48vh;overflow:auto;background:var(--card);border-radius:16px 16px 0 0;padding:14px 16px calc(14px + env(safe-area-inset-bottom,0px));box-shadow:0 -4px 20px #0003}
+h2{margin:0 0 6px;font-size:17px}p{margin:6px 0}.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.fb{border-left:4px solid var(--ac);padding:4px 10px;margin-top:8px;background:#7a4a2112;border-radius:4px}
+.ok{color:var(--ok)}.bad{color:var(--bad)}small{opacity:.75}
+textarea{width:100%;min-height:70px;box-sizing:border-box;font:inherit;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--fg);padding:8px}
+#vrhint{position:fixed;left:0;right:0;bottom:10px;text-align:center;display:none;font-size:12px}
+</style></head><body>
+<video id="v" playsinline muted></video><canvas id="cv"></canvas>
+<div id="top">
+ <span class="chip" id="stg">Tahap 0/4</span><span class="chip" id="tm">00:00</span>
+ <button id="bAR">Mode AR</button><button id="bVR">Mode VR</button><button id="bZ">Zoom +</button>
+</div>
+<div id="vrhint">Mode VR: pasang di headset kardus, putar badan untuk mengitari tanaman, ketuk layar untuk memilih objek di titik tengah.</div>
+<div id="panel"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const $=s=>document.querySelector(s),clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const COL={merah:0xc0182b,hijau:0x3f8f3a,kuning:0xe3b52a,hitam:0x2a1a14};
+const SYM={
+N:{n:"Kekurangan Nitrogen (N)",c:0xd8d04a,d:"Daun tua menguning merata, pertumbuhan terhambat.",f:"Beri pupuk sumber N (urea atau ZA) dan tambahkan bahan organik."},
+K:{n:"Kekurangan Kalium (K)",c:0x9a7b2e,d:"Tepi dan ujung daun cokelat mengering (nekrosis).",f:"Beri pupuk sumber K (KCl atau ZK), terutama saat buah mulai berkembang."},
+Mg:{n:"Kekurangan Magnesium (Mg)",c:0xb8c24a,d:"Menguning di antara tulang daun, tulang daun tetap hijau.",f:"Beri kieserit atau dolomit (sekaligus menaikkan pH jika tanah masam)."},
+karat:{n:"Karat daun (Hemileia vastatrix)",c:0xe08a1e,d:"Bercak kuning-oranye berserbuk di sisi bawah daun.",f:"Ini penyakit, bukan masalah hara: pangkas naungan berlebih, semprot fungisida tembaga, gunakan varietas tahan."}};
+let ex=null,stage=0,t0=Date.now(),score={a:null,b:null,c:null};
+const pick_=a=>a[Math.random()*a.length|0];
+function localEx(){
+ const ch=Array.from({length:12},()=>pick_(["merah","merah","hijau","kuning","hitam"]));ch[0]="merah";ch[1]="merah";ch[2]="hijau";
+ const br=Array.from({length:8},()=>pick_(["produktif","produktif","wiwilan","kering"]));br[0]="wiwilan";br[1]="kering";
+ return{cherries:ch,branches:br,symptom:pick_(Object.keys(SYM)),konteks:"Kebun kopi rakyat pada ketinggian sedang dengan tanaman berumur 6 tahun yang belum dipelihara secara rutin.",src:"offline"}}
+function valid(o){return o&&Array.isArray(o.cherries)&&o.cherries.length==12&&o.cherries.every(x=>x in COL)&&o.cherries.includes("merah")&&Array.isArray(o.branches)&&o.branches.length==8&&o.branches.every(x=>["produktif","wiwilan","kering"].includes(x))&&o.branches.includes("wiwilan")&&SYM[o.symptom]&&typeof o.konteks=="string"}
+async function genEx(){
+ try{const s=window.claude&&await claude.use("sample");if(!s)throw 0;
+  const o=await s.json("Buat satu variasi latihan visual acak untuk media belajar Teknologi Produksi Tanaman Kopi. Balas HANYA JSON: {\"cherries\":[12 string dari merah|hijau|kuning|hitam, minimal 3 merah dan 1 non-merah],\"branches\":[8 string dari produktif|wiwilan|kering, minimal 2 wiwilan dan 1 kering],\"symptom\":\"N atau K atau Mg atau karat\",\"konteks\":\"2 kalimat kasus kebun kopi (Arabika/Robusta, ketinggian, kondisi) dalam bahasa Indonesia yang sesuai dengan symptom\"}. Variasikan setiap kali.",{cache:false,modelTier:"quick"});
+  if(valid(o)){o.src="GenAI";return o}}catch(e){}
+ return localEx()}
+/* ---------- 3D ---------- */
+const cv=$("#cv"),R=new THREE.WebGLRenderer({canvas:cv,antialias:true,alpha:true}),scene=new THREE.Scene(),cam=new THREE.PerspectiveCamera(50,1,.1,50);
+scene.add(new THREE.HemisphereLight(0xffffff,0x6a5a3a,1.0));const dl=new THREE.DirectionalLight(0xffffff,.8);dl.position.set(3,6,4);scene.add(dl);
+const ground=new THREE.Mesh(new THREE.CircleGeometry(4,40),new THREE.MeshLambertMaterial({color:0x7a5c3a}));ground.rotation.x=-Math.PI/2;scene.add(ground);
+let plant=new THREE.Group(),W=1,H=1,th=.6,ph=1.25,dist=5,vr=false,ar=false,mode="idle";
+const M=c=>new THREE.MeshLambertMaterial({color:c});
+function build(m){
+ mode=m;scene.remove(plant);plant=new THREE.Group();plant.userData.items=[];
+ const tr=new THREE.Mesh(new THREE.CylinderGeometry(.08,.13,2.6,10),M(0x6b4a2b));tr.position.y=1.3;plant.add(tr);
+ const leafC=m=="diag"?SYM[ex.symptom].c:0x2f7d32;
+ for(let i=0;i<8;i++){
+  const type=m=="prune"?ex.branches[i]:"produktif";
+  const g=new THREE.Group();g.position.y=.5+i*.26;g.rotation.y=i*2.4;
+  const pv=new THREE.Group();pv.rotation.z=type=="wiwilan"?1.3:type=="kering"?-.2:.18;g.add(pv);
+  const len=type=="wiwilan"?1:1.25,rad=type=="wiwilan"?.06:.035;
+  const b=new THREE.Mesh(new THREE.CylinderGeometry(rad,rad*1.2,len,8),M(type=="wiwilan"?0x8bc34a:type=="kering"?0x8d8d8d:0x6b4a2b));b.rotation.z=-Math.PI/2;b.position.x=len/2;pv.add(b);
+  for(let k=0;k<4;k++){const l=new THREE.Mesh(new THREE.SphereGeometry(1,10,6),M(type=="kering"?0x7a5a2a:leafC));l.scale.set(.2,.03,.1);l.position.set(.3+k*.26,.05,k%2?.1:-.1);pv.add(l)}
+  g.userData={kind:"branch",type,sel:false};plant.userData.items.push(g);plant.add(g);
+  if(m=="harvest"||m=="idle")for(let c=0;c<2;c++){const idx=i*2+c,col=m=="idle"?"merah":ex.cherries[idx]; if(idx>11&&m=="harvest")continue;
+   const ch=new THREE.Mesh(new THREE.SphereGeometry(.075,12,10),M(COL[col]));ch.position.set(.35+c*.4,-.1,.02);ch.userData={kind:"cherry",col};pv.add(ch);
+   if(m=="harvest")plant.userData.items.push(ch)}
+ }
+ if(m!="harvest")plant.userData.items=plant.userData.items.filter(o=>o.userData.kind=="branch"&&m=="prune");
+ scene.add(plant)}
+function resize(){W=innerWidth;H=innerHeight;R.setPixelRatio(Math.min(devicePixelRatio,2));R.setSize(W,H,false)}
+addEventListener("resize",resize);resize();
+function place(){const x=dist*Math.sin(ph)*Math.sin(th),y=1.5+dist*Math.cos(ph),z=dist*Math.sin(ph)*Math.cos(th);cam.position.set(x,y,z);cam.lookAt(0,1.5,0)}
+function frame(t){requestAnimationFrame(frame);plant.rotation.z=Math.sin(t/900)*.008;place();
+ if(!vr){R.setScissorTest(false);R.setViewport(0,0,W,H);cam.aspect=W/H;cam.updateProjectionMatrix();R.render(scene,cam)}
+ else{R.setScissorTest(true);cam.aspect=W/2/H;cam.updateProjectionMatrix();const p=cam.position.clone();
+  [-1,1].forEach((e,i)=>{cam.position.copy(p);cam.translateX(e*.04);R.setViewport(i*W/2,0,W/2,H);R.setScissor(i*W/2,0,W/2,H);R.render(scene,cam)});cam.position.copy(p)}
+ const s=((Date.now()-t0)/1000|0);$("#tm").textContent=String(s/60|0).padStart(2,"0")+":"+String(s%60).padStart(2,"0")+" (target 15–20 mnt)"}
+requestAnimationFrame(frame);
+/* ---------- input ---------- */
+const ptr=new Map(),rc=new THREE.Raycaster();let moved=0;
+cv.addEventListener("pointerdown",e=>{cv.setPointerCapture(e.pointerId);ptr.set(e.pointerId,[e.clientX,e.clientY]);moved=0});
+cv.addEventListener("pointermove",e=>{if(!ptr.has(e.pointerId))return;const p=ptr.get(e.pointerId);
+ if(ptr.size==2){const a=[...ptr.values()],d0=Math.hypot(a[0][0]-a[1][0],a[0][1]-a[1][1]);ptr.set(e.pointerId,[e.clientX,e.clientY]);const b=[...ptr.values()],d1=Math.hypot(b[0][0]-b[1][0],b[0][1]-b[1][1]);dist=clamp(dist*d0/d1,2,9);moved=99}
+ else{const dx=e.clientX-p[0],dy=e.clientY-p[1];moved+=Math.abs(dx)+Math.abs(dy);th-=dx*.008;ph=clamp(ph-dy*.006,.3,1.6);ptr.set(e.pointerId,[e.clientX,e.clientY])}});
+cv.addEventListener("pointerup",e=>{if(ptr.size==1&&moved<8)tap(e.clientX,e.clientY);ptr.delete(e.pointerId)});
+cv.addEventListener("wheel",e=>{dist=clamp(dist+e.deltaY*.004,2,9)});
+$("#bZ").onclick=()=>{dist=dist<=2.6?5:dist-1.2};
+function tap(x,y){if(mode!="harvest"&&mode!="prune")return;
+ rc.setFromCamera(vr?new THREE.Vector2(0,0):new THREE.Vector2(x/W*2-1,-y/H*2+1),cam);
+ for(const h of rc.intersectObjects(plant.children,true)){let o=h.object;while(o&&!o.userData.kind)o=o.parent;
+  if(!o||!o.visible)continue;const k=o.userData.kind;if((mode=="harvest"&&k=="cherry")||(mode=="prune"&&k=="branch")){o.userData.sel=true;o.visible=false;upd();return}}}
+$("#bAR").onclick=async()=>{const v=$("#v");
+ if(ar){ar=false;v.style.display="none";ground.visible=true;v.srcObject&&v.srcObject.getTracks().forEach(t=>t.stop());$("#bAR").classList.remove("on");return}
+ try{v.srcObject=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}});await v.play();ar=true;v.style.display="block";ground.visible=false;$("#bAR").classList.add("on")}
+ catch(e){alert("Kamera tidak dapat diakses. Izinkan akses kamera, lalu coba lagi.")}};
+function gyro(e){if(e.alpha==null)return;th=-e.alpha*Math.PI/180;ph=clamp(e.beta*Math.PI/180,.4,1.6)}
+$("#bVR").onclick=async()=>{vr=!vr;$("#bVR").classList.toggle("on",vr);$("#vrhint").style.display=vr?"block":"none";
+ if(vr){try{if(DeviceOrientationEvent.requestPermission)await DeviceOrientationEvent.requestPermission()}catch(e){}addEventListener("deviceorientation",gyro)}else removeEventListener("deviceorientation",gyro)};
+/* ---------- tahapan belajar ---------- */
+const P=h=>{$("#panel").innerHTML=h;$("#panel").scrollTop=0;$("#stg").textContent="Tahap "+stage+"/4"};
+const T=(id,t)=>{$(id).textContent=t};
+const nxt=(s)=>`<button class="p" onclick="go(${s})">Lanjut ›</button>`;
+const pct=(good,bad,tot)=>Math.max(0,Math.min(100,Math.round(100*(good-bad)/tot)));
+function go(s){stage=s;({0:s0,1:s1,2:s2,3:s3,4:s4})[s]()}
+function s0(){build("idle");P(`<h2>☕ KopiXR: Teknologi Produksi Tanaman Kopi</h2>
+<p>Jelajahi tanaman kopi 3D: seret untuk memutar, cubit atau roda mouse untuk zoom. Gunakan <b>Mode AR</b> (kamera) atau <b>Mode VR</b> (headset kardus). Anda akan menjalani 4 tahap (±15–20 menit): <b>panen selektif, pemangkasan, diagnosis hara/penyakit, refleksi</b>.</p>
+<p>Setiap sesi memakai <b>latihan visual yang dibuat otomatis oleh GenAI</b>, jadi tiap percobaan berbeda.</p>
+<div class="row"><button class="p" id="bs">Buat latihan dengan GenAI & mulai</button></div>`);
+ $("#bs").onclick=async()=>{$("#bs").disabled=true;$("#bs").textContent="GenAI sedang membuat latihan…";ex=await genEx();t0=Date.now();score={a:null,b:null,c:null};go(1)}}
+const badge=()=>`<small>Latihan: ${ex.src=="GenAI"?"dibuat oleh GenAI":"mode offline (acak lokal)"}</small>`;
+function s1(){build("harvest");P(`<h2>1. Panen selektif (interaksi 1)</h2><p id="cx"></p>
+<p><b>Materi:</b> kopi dipetik saat buah <b>merah</b> (matang penuh) agar cita rasa dan rendemen optimal. Buah hijau menurunkan mutu; buah hitam/kering adalah overripe dan sering menjadi sarang hama penggerek buah (PBKo).</p>
+<p><b>Tugas:</b> ketuk (tap) hanya buah yang pantas dipetik. Dipetik: <b id="n">0</b>. ${badge()}</p>
+<div class="row"><button class="p" id="ck">Periksa hasil panen</button><button onclick="go(1)">Ulangi</button></div><div id="fb"></div>`);T("#cx",ex.konteks);
+ $("#ck").onclick=()=>{const it=plant.userData.items,R_=it.filter(o=>o.userData.col=="merah").length,g=it.filter(o=>o.userData.sel&&o.userData.col=="merah").length,b=it.filter(o=>o.userData.sel&&o.userData.col!="merah").length;
+  score.a=pct(g,b,R_);$("#fb").innerHTML=`<div class="fb"><b>Skor: ${score.a}</b><br>Benar dipetik (merah): ${g} dari ${R_}. Salah petik (belum matang/overripe): <span class="${b?"bad":"ok"}">${b}</span>. ${b?"Buah hijau/kuning yang terpetik menurunkan mutu biji.":"Panen selektif Anda sudah tepat."}</div><div class="row">${nxt(2)}</div>`}}
+function upd(){if($("#n"))$("#n").textContent=plant.userData.items.filter(o=>o.userData.sel).length}
+function s2(){build("prune");P(`<h2>2. Pemangkasan (interaksi 2)</h2>
+<p><b>Materi:</b> <b>wiwilan</b> (tunas air, tumbuh tegak, hijau muda) menyedot hara tanpa menghasilkan buah. <b>Cabang kering/sakit</b> (abu-abu, daun cokelat) menjadi sumber inokulum penyakit. <b>Cabang produktif</b> (cokelat, daun hijau) harus dipertahankan.</p>
+<p><b>Tugas:</b> ketuk cabang yang harus dipangkas. Dipangkas: <b id="n">0</b> ${badge()}</p>
+<div class="row"><button class="p" id="ck">Periksa pemangkasan</button><button onclick="go(2)">Ulangi</button></div><div id="fb"></div>`);
+ $("#ck").onclick=()=>{const it=plant.userData.items,bad=o=>o.userData.type!="produktif",P_=it.filter(bad).length,g=it.filter(o=>o.userData.sel&&bad(o)).length,b=it.filter(o=>o.userData.sel&&!bad(o)).length;
+  score.b=pct(g,b,P_);$("#fb").innerHTML=`<div class="fb"><b>Skor: ${score.b}</b><br>Wiwilan/cabang kering yang dipangkas: ${g} dari ${P_}. Cabang produktif ikut terpangkas: <span class="${b?"bad":"ok"}">${b}</span>. ${b?"Memangkas cabang produktif mengurangi hasil panen musim depan.":"Pemangkasan Anda menjaga potensi hasil."}</div><div class="row">${nxt(3)}</div>`}}
+function s3(){build("diag");const ks=Object.keys(SYM);P(`<h2>3. Diagnosis hara/penyakit (interaksi 3)</h2><p id="cx"></p>
+<p><b>Catatan lapang:</b> <i id="ds"></i> Putar tanaman dan amati warna daun. ${badge()}</p>
+<p><b>Tugas:</b> pilih diagnosis yang paling tepat.</p>
+<div class="row">${ks.map(k=>`<button data-k="${k}">${SYM[k].n}</button>`).join("")}</div><div id="fb"></div>`);T("#cx",ex.konteks);T("#ds",SYM[ex.symptom].d);
+ document.querySelectorAll("[data-k]").forEach(b=>b.onclick=()=>{const ok=b.dataset.k==ex.symptom;score.c=ok?100:0;document.querySelectorAll("[data-k]").forEach(x=>x.disabled=true);
+  $("#fb").innerHTML=`<div class="fb"><b class="${ok?"ok":"bad"}">${ok?"Tepat!":"Belum tepat."}</b> Diagnosis benar: <b>${SYM[ex.symptom].n}</b>. ${SYM[ex.symptom].f}</div><div class="row">${nxt(4)}</div>`})}
+function s4(){build("idle");const tot=Math.round((score.a+score.b+score.c)/3);P(`<h2>4. Refleksi bersama tutor AI</h2>
+<p>Skor Anda: panen <b>${score.a}</b>, pemangkasan <b>${score.b}</b>, diagnosis <b>${score.c}</b>. Rata-rata <b>${tot}</b>.</p>
+<p>Tulis rencana singkat 3 langkah untuk meningkatkan produktivitas kebun kopi pada kasus tadi.</p>
+<textarea id="rf" placeholder="Contoh: 1) … 2) … 3) …"></textarea>
+<div class="row"><button class="p" id="ai">Minta umpan balik AI</button><button onclick="go(0)">Ulangi dengan latihan baru</button></div><div id="fb"></div>`);
+ $("#ai").onclick=async()=>{const r=$("#rf").value.trim();if(r.length<15){$("#fb").textContent="Tuliskan rencana Anda terlebih dahulu (minimal beberapa kalimat).";return}
+  $("#ai").disabled=true;$("#fb").textContent="Tutor AI sedang menilai…";
+  try{const s=await claude.use("sample");if(!s)throw 0;
+   const o=await s.json(`Anda tutor mata kuliah Teknologi Produksi Tanaman Kopi. Kasus: ${ex.konteks} Diagnosis benar: ${SYM[ex.symptom].n}. Skor mahasiswa: panen ${score.a}, pangkas ${score.b}, diagnosis ${score.c}. Rencana mahasiswa: """${r}""". Balas HANYA JSON: {"kekuatan":"1-2 kalimat","perbaikan":"1-2 kalimat konkret dan akurat secara agronomi","pertanyaan":"satu pertanyaan pemantik lanjutan"}`,{cache:false});
+   const d=$("#fb");d.innerHTML='<div class="fb"><p><b>Kekuatan:</b> <span id="a1"></span></p><p><b>Perbaikan:</b> <span id="a2"></span></p><p><b>Pertanyaan pemantik:</b> <span id="a3"></span></p></div>';T("#a1",o.kekuatan);T("#a2",o.perbaikan);T("#a3",o.pertanyaan)}
+  catch(e){$("#fb").innerHTML='<div class="fb">Tutor AI tidak tersedia saat ini. Bandingkan rencana Anda dengan materi tiap tahap, lalu diskusikan dengan dosen.</div>'}
+  $("#ai").disabled=false}}
+s0();
+</script></body></html>
